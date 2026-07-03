@@ -1,24 +1,9 @@
-# Python
 __pycache__/
 *.py[cod]
-
-# Virtual environment
 venv/
-
-# Environment variables
 .env
-
-# Jupyter
 .ipynb_checkpoints/
-
-# VS Code
 .vscode/
-
-# macOS
-.DS_Store
-
-# Trained models
-models/
-
-# Logs
 *.log
+/data/processed/
+/data/raw/
