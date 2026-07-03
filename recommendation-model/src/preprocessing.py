@@ -77,19 +77,30 @@ def scale_audio_features(df: pd.DataFrame):
     audio_matrix = scaler.fit_transform(audio_df.fillna(0))
     return scaler, audio_matrix
 
+
+def normalize(feature, prefix):
+    if pd.isna(feature):
+        return ""
+
+    feature = feature.split(",")
+
+    feature = [
+        f"{prefix}_{f.strip().lower().replace(' ', '_')}"
+        for f in feature
+    ]
+
+    return " ".join(feature)
+
+
 def build_metadata(df: pd.DataFrame):
-    def format_tags(series: pd.Series, prefix: str) -> pd.Series:
-        cleaned = series.fillna("").astype(str).str.lower().str.strip()
-        cleaned = cleaned.str.replace(r'[^a-z0-9]+', '_', regex=True)
-        cleaned = cleaned.str.strip('_')
-        return np.where(cleaned != "", prefix + "_" + cleaned, "")
-
-    artist_tags = format_tags(df["Artist(s)"], "artist")
-    genre_tags = format_tags(df["Genre"], "genre")
-    emotion_tags = format_tags(df["emotion"], "emotion")
-
-    metadata = artist_tags + " " + genre_tags + " " + emotion_tags
+    metadata = (
+        df["Artist(s)"].apply(lambda x: normalize(x, "artist")) + " " +
+        df["Genre"].apply(lambda x: normalize(x, "genre")) + " " +
+        df["Album"].apply(lambda x: normalize(x, "album")) + " " +
+        df["emotion"].apply(lambda x: normalize(x, "emotion"))
+    )
     return metadata
+
 
 def build_tfidf(metadata):
     vectorizer = TfidfVectorizer(stop_words="english", min_df=2)
