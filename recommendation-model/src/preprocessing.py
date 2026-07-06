@@ -6,7 +6,7 @@ from scipy import sparse
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import StandardScaler
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent.parent
 DATASET_PATH = BASE_DIR / "data" / "raw" / "spotify_dataset.csv"
 OUTPUT_DIR = BASE_DIR / "data" / "processed"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -96,8 +96,7 @@ def build_metadata(df: pd.DataFrame):
     metadata = (
         df["Artist(s)"].apply(lambda x: normalize(x, "artist")) + " " +
         df["Genre"].apply(lambda x: normalize(x, "genre")) + " " +
-        df["Album"].apply(lambda x: normalize(x, "album")) + " " +
-        df["emotion"].apply(lambda x: normalize(x, "emotion"))
+        df["Album"].apply(lambda x: normalize(x, "album"))
     )
     return metadata
 
