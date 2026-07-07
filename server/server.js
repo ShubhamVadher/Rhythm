@@ -153,8 +153,53 @@ app.post('/auth/spotify/callback', async (req, res) => {
 });
 
 
-app.get('/auth/me', requireAuth, (req, res) => {
-    return res.json({ user: req.jwtPayload });
+app.get('/auth/me', requireAuth, async (req, res) => {
+    try {
+        const dbUser = await User.findOne({ account_id: req.jwtPayload.account_id });
+        if (!dbUser) return res.status(404).json({ error: 'User not found' });
+        return res.json({
+            user: {
+                account_id: dbUser.account_id,
+                name: dbUser.name,
+                fav_artists: dbUser.fav_artists || [],
+                fav_genres: dbUser.fav_genres || [],
+            }
+        });
+    } catch (err) {
+        return res.status(500).json({ error: 'Server error' });
+    }
+});
+
+app.post('/user/preferences', requireAuth, async (req, res) => {
+    const { fav_artists, fav_genres } = req.body;
+
+    if (!Array.isArray(fav_artists) || fav_artists.length < 3 || fav_artists.length > 10) {
+        return res.status(400).json({ error: 'fav_artists must be an array of 3–10 items.' });
+    }
+    if (!Array.isArray(fav_genres) || fav_genres.length < 3 || fav_genres.length > 10) {
+        return res.status(400).json({ error: 'fav_genres must be an array of 3–10 items.' });
+    }
+
+    try {
+        const dbUser = await User.findOneAndUpdate(
+            { account_id: req.jwtPayload.account_id },
+            { fav_artists, fav_genres },
+            { new: true }
+        );
+        if (!dbUser) return res.status(404).json({ error: 'User not found' });
+        return res.json({
+            success: true,
+            user: {
+                account_id: dbUser.account_id,
+                name: dbUser.name,
+                fav_artists: dbUser.fav_artists,
+                fav_genres: dbUser.fav_genres,
+            }
+        });
+    } catch (err) {
+        console.error('Preferences update error:', err);
+        return res.status(500).json({ error: 'Database error' });
+    }
 });
 
 async function getSpotifyAccessToken(accountId) {
@@ -228,13 +273,13 @@ async function safeFetch(url, options = {}) {
 
 app.get('/me/enriched-tracks', requireAuth, async (req, res) => {
     try {
-        
+
         const accessToken = await getSpotifyAccessToken(req.jwtPayload.account_id);
         if (!accessToken) {
             return res.status(401).json({ error: 'Spotify reconnect needed' });
         }
 
-        
+
         const { data: recentData } = await safeFetch(
             'https://api.spotify.com/v1/me/player/recently-played?limit=50',
             { headers: { Authorization: `Bearer ${accessToken}` } }
@@ -244,7 +289,7 @@ app.get('/me/enriched-tracks', requireAuth, async (req, res) => {
             return res.json({ tracks: [] });
         }
 
-        
+
         const seenIds = new Set();
         const uniqueTracks = recentData.items.filter(item => {
             if (seenIds.has(item.track.id)) return false;
@@ -252,7 +297,7 @@ app.get('/me/enriched-tracks', requireAuth, async (req, res) => {
             return true;
         });
 
-        
+
         const spotifyDataMap = {};
         const spotifyIds = [];
 
@@ -261,16 +306,16 @@ app.get('/me/enriched-tracks', requireAuth, async (req, res) => {
             spotifyIds.push(t.id);
             spotifyDataMap[t.id] = {
                 spotify_track_id: t.id,
-                track_name:       t.name,
-                album_name:       t.album.name,
-                album_image:      t.album.images?.[0]?.url || null,
-                release_date:     t.album.release_date,
-                duration_ms:      t.duration_ms,
-                explicit:         t.explicit,
-                played_at:        item.played_at,
-                source_type:      item.context?.type || 'unknown',
+                track_name: t.name,
+                album_name: t.album.name,
+                album_image: t.album.images?.[0]?.url || null,
+                release_date: t.album.release_date,
+                duration_ms: t.duration_ms,
+                explicit: t.explicit,
+                played_at: item.played_at,
+                source_type: item.context?.type || 'unknown',
                 artists: t.artists.map(a => ({
-                    id:   a.id,
+                    id: a.id,
                     name: a.name,
                 })),
             };
@@ -282,22 +327,22 @@ app.get('/me/enriched-tracks', requireAuth, async (req, res) => {
             `https://api.reccobeats.com/v1/track?${idsQuery}`
         );
 
-       
+
         const reccoIdMap = {};
         const reccoTracks = reccoTracksData?.content || reccoTracksData?.tracks || reccoTracksData || [];
 
         for (const track of reccoTracks) {
-       
+
             const spotifyId = track.href?.split('/track/')?.[1];
             if (spotifyId) {
                 reccoIdMap[spotifyId] = {
                     reccobeats_id: track.id,
-                    popularity:    track.popularity ?? null,
+                    popularity: track.popularity ?? null,
                 };
             }
         }
 
-   
+
         const audioFeaturesMap = {};
 
         await Promise.all(
@@ -309,57 +354,57 @@ app.get('/me/enriched-tracks', requireAuth, async (req, res) => {
                 );
 
                 audioFeaturesMap[spotifyId] = {
-                    danceability:     features.danceability     ?? null,
-                    energy:           features.energy           ?? null,
-                    key:              features.key              ?? null,
-                    loudness:         features.loudness         ?? null,
-                    mode:             features.mode             ?? null,
-                    speechiness:      features.speechiness      ?? null,
-                    acousticness:     features.acousticness     ?? null,
+                    danceability: features.danceability ?? null,
+                    energy: features.energy ?? null,
+                    key: features.key ?? null,
+                    loudness: features.loudness ?? null,
+                    mode: features.mode ?? null,
+                    speechiness: features.speechiness ?? null,
+                    acousticness: features.acousticness ?? null,
                     instrumentalness: features.instrumentalness ?? null,
-                    liveness:         features.liveness         ?? null,
-                    valence:          features.valence          ?? null,
-                    tempo:            features.tempo            ?? null,
+                    liveness: features.liveness ?? null,
+                    valence: features.valence ?? null,
+                    tempo: features.tempo ?? null,
                 };
             })
         );
 
-    
+
         const enrichedTracks = spotifyIds.map(spotifyId => {
-            const spotify  = spotifyDataMap[spotifyId];
-            const recco    = reccoIdMap[spotifyId] || {};
+            const spotify = spotifyDataMap[spotifyId];
+            const recco = reccoIdMap[spotifyId] || {};
             const features = audioFeaturesMap[spotifyId] || {};
 
             return {
-               
-                spotify_track_id:  spotifyId,
-                reccobeats_id:     recco.reccobeats_id  || null,
 
-           
-                track_name:        spotify.track_name,
-                album_name:        spotify.album_name,
-                album_image:       spotify.album_image,
-                release_date:      spotify.release_date,
-                artists:           spotify.artists,
-                duration_ms:       spotify.duration_ms,
-                explicit:          spotify.explicit,
-                played_at:         spotify.played_at,
-                source_type:       spotify.source_type,
+                spotify_track_id: spotifyId,
+                reccobeats_id: recco.reccobeats_id || null,
 
-       
-                popularity:        recco.popularity     || null,
 
-                danceability:      features.danceability     ?? null,
-                energy:            features.energy           ?? null,
-                key:               features.key              ?? null,
-                loudness:          features.loudness         ?? null,
-                mode:              features.mode             ?? null,
-                speechiness:       features.speechiness      ?? null,
-                acousticness:      features.acousticness     ?? null,
-                instrumentalness:  features.instrumentalness ?? null,
-                liveness:          features.liveness         ?? null,
-                valence:           features.valence          ?? null,
-                tempo:             features.tempo            ?? null,
+                track_name: spotify.track_name,
+                album_name: spotify.album_name,
+                album_image: spotify.album_image,
+                release_date: spotify.release_date,
+                artists: spotify.artists,
+                duration_ms: spotify.duration_ms,
+                explicit: spotify.explicit,
+                played_at: spotify.played_at,
+                source_type: spotify.source_type,
+
+
+                popularity: recco.popularity || null,
+
+                danceability: features.danceability ?? null,
+                energy: features.energy ?? null,
+                key: features.key ?? null,
+                loudness: features.loudness ?? null,
+                mode: features.mode ?? null,
+                speechiness: features.speechiness ?? null,
+                acousticness: features.acousticness ?? null,
+                instrumentalness: features.instrumentalness ?? null,
+                liveness: features.liveness ?? null,
+                valence: features.valence ?? null,
+                tempo: features.tempo ?? null,
             };
         });
 
@@ -384,7 +429,7 @@ app.get('/me/top-tracks-enriched', requireAuth, async (req, res) => {
             return res.status(401).json({ error: 'Spotify reconnect needed' });
         }
 
-       
+
         const { data: topData } = await safeFetch(
             `https://api.spotify.com/v1/me/top/tracks?limit=50&time_range=${time_range}`,
             { headers: { Authorization: `Bearer ${accessToken}` } }
@@ -394,7 +439,7 @@ app.get('/me/top-tracks-enriched', requireAuth, async (req, res) => {
             return res.json({ tracks: [] });
         }
 
-       
+
         const seenIds = new Set();
         const uniqueTracks = topData.items.filter(item => {
             if (seenIds.has(item.id)) return false;
@@ -402,7 +447,7 @@ app.get('/me/top-tracks-enriched', requireAuth, async (req, res) => {
             return true;
         });
 
-       
+
         const spotifyDataMap = {};
         const spotifyIds = [];
 
@@ -410,22 +455,22 @@ app.get('/me/top-tracks-enriched', requireAuth, async (req, res) => {
             spotifyIds.push(item.id);
             spotifyDataMap[item.id] = {
                 spotify_track_id: item.id,
-                track_name:       item.name,
-                album_name:       item.album.name,
-                album_image:      item.album.images?.[0]?.url || null,
-                release_date:     item.album.release_date,
-                duration_ms:      item.duration_ms,
-                explicit:         item.explicit,
-                popularity:       item.popularity, // top tracks includes this directly
-                source_type:      'top_tracks',
+                track_name: item.name,
+                album_name: item.album.name,
+                album_image: item.album.images?.[0]?.url || null,
+                release_date: item.album.release_date,
+                duration_ms: item.duration_ms,
+                explicit: item.explicit,
+                popularity: item.popularity, // top tracks includes this directly
+                source_type: 'top_tracks',
                 artists: item.artists.map(a => ({
-                    id:   a.id,
+                    id: a.id,
                     name: a.name,
                 })),
             };
         }
 
-     
+
         const idsQuery = spotifyIds.map(id => `ids=${id}`).join('&');
         const { data: reccoTracksData } = await safeFetch(
             `https://api.reccobeats.com/v1/track?${idsQuery}`
@@ -439,12 +484,12 @@ app.get('/me/top-tracks-enriched', requireAuth, async (req, res) => {
             if (spotifyId) {
                 reccoIdMap[spotifyId] = {
                     reccobeats_id: track.id,
-                    popularity:    track.popularity ?? null,
+                    popularity: track.popularity ?? null,
                 };
             }
         }
 
-       
+
         const audioFeaturesMap = {};
 
         await Promise.all(
@@ -456,50 +501,50 @@ app.get('/me/top-tracks-enriched', requireAuth, async (req, res) => {
                 );
 
                 audioFeaturesMap[spotifyId] = {
-                    danceability:     features.danceability     ?? null,
-                    energy:           features.energy           ?? null,
-                    key:              features.key              ?? null,
-                    loudness:         features.loudness         ?? null,
-                    mode:             features.mode             ?? null,
-                    speechiness:      features.speechiness      ?? null,
-                    acousticness:     features.acousticness     ?? null,
+                    danceability: features.danceability ?? null,
+                    energy: features.energy ?? null,
+                    key: features.key ?? null,
+                    loudness: features.loudness ?? null,
+                    mode: features.mode ?? null,
+                    speechiness: features.speechiness ?? null,
+                    acousticness: features.acousticness ?? null,
                     instrumentalness: features.instrumentalness ?? null,
-                    liveness:         features.liveness         ?? null,
-                    valence:          features.valence          ?? null,
-                    tempo:            features.tempo            ?? null,
+                    liveness: features.liveness ?? null,
+                    valence: features.valence ?? null,
+                    tempo: features.tempo ?? null,
                 };
             })
         );
 
-       
+
         const enrichedTracks = spotifyIds.map(spotifyId => {
-            const spotify  = spotifyDataMap[spotifyId];
-            const recco    = reccoIdMap[spotifyId] || {};
+            const spotify = spotifyDataMap[spotifyId];
+            const recco = reccoIdMap[spotifyId] || {};
             const features = audioFeaturesMap[spotifyId] || {};
 
             return {
-                spotify_track_id:  spotifyId,
-                reccobeats_id:     recco.reccobeats_id  || null,
-                track_name:        spotify.track_name,
-                album_name:        spotify.album_name,
-                album_image:       spotify.album_image,
-                release_date:      spotify.release_date,
-                artists:           spotify.artists,
-                duration_ms:       spotify.duration_ms,
-                explicit:          spotify.explicit,
-                popularity:        spotify.popularity   || recco.popularity || null,
-                source_type:       spotify.source_type,
-                danceability:      features.danceability     ?? null,
-                energy:            features.energy           ?? null,
-                key:               features.key              ?? null,
-                loudness:          features.loudness         ?? null,
-                mode:              features.mode             ?? null,
-                speechiness:       features.speechiness      ?? null,
-                acousticness:      features.acousticness     ?? null,
-                instrumentalness:  features.instrumentalness ?? null,
-                liveness:          features.liveness         ?? null,
-                valence:           features.valence          ?? null,
-                tempo:             features.tempo            ?? null,
+                spotify_track_id: spotifyId,
+                reccobeats_id: recco.reccobeats_id || null,
+                track_name: spotify.track_name,
+                album_name: spotify.album_name,
+                album_image: spotify.album_image,
+                release_date: spotify.release_date,
+                artists: spotify.artists,
+                duration_ms: spotify.duration_ms,
+                explicit: spotify.explicit,
+                popularity: spotify.popularity || recco.popularity || null,
+                source_type: spotify.source_type,
+                danceability: features.danceability ?? null,
+                energy: features.energy ?? null,
+                key: features.key ?? null,
+                loudness: features.loudness ?? null,
+                mode: features.mode ?? null,
+                speechiness: features.speechiness ?? null,
+                acousticness: features.acousticness ?? null,
+                instrumentalness: features.instrumentalness ?? null,
+                liveness: features.liveness ?? null,
+                valence: features.valence ?? null,
+                tempo: features.tempo ?? null,
             };
         });
 
@@ -514,6 +559,15 @@ app.get('/me/top-tracks-enriched', requireAuth, async (req, res) => {
         res.status(500).json({ error: 'Internal server error', detail: err.message });
     }
 });
+
+app.get('/artist_genre',requireAuth,(req,res)=>{
+    const user=req.user;
+
+    res.status(200).json({
+        genres:user.fav_genres,
+        artists:user.fav_artists
+    })
+})
 
 app.listen(5000, () => {
     console.log('Server running on http://localhost:5000');

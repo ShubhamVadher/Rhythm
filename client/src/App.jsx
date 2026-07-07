@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { Routes, Route, useNavigate, useSearchParams } from 'react-router-dom'
 import axios from 'axios'
 import { Navbar } from './components/Navbar.jsx'
+import Onboarding from './components/Onboarding.jsx'
 import { useAuth } from './context/AuthContext'
 import './App.css'
 
@@ -9,7 +10,6 @@ const Home = () => {
   const { user, loading } = useAuth()
 
   const handleLogin = () => {
-    // Redirect using relative path so Vite dev proxy handles it
     window.location.href = '/auth/spotify'
   }
 
@@ -55,12 +55,20 @@ const Callback = () => {
       }
 
       try {
-        // Exchange code using relative path to trigger Vite proxy
         const response = await axios.post('/auth/spotify/callback', { code })
 
         if (response.data && response.data.success) {
           await checkAuth()
-          navigate('/')
+          // Check if onboarding is needed
+          const meRes = await axios.get('/auth/me')
+          const u = meRes.data?.user
+          const needsOnboarding =
+            !u ||
+            !u.fav_artists ||
+            u.fav_artists.length === 0 ||
+            !u.fav_genres ||
+            u.fav_genres.length === 0
+          navigate(needsOnboarding ? '/onboarding' : '/')
         } else {
           setError('Authentication failed.')
         }
@@ -96,8 +104,10 @@ function App() {
     <Routes>
       <Route path="/" element={<Home />} />
       <Route path="/callback" element={<Callback />} />
+      <Route path="/onboarding" element={<Onboarding />} />
     </Routes>
   )
 }
 
 export default App
+

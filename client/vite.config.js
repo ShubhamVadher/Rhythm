@@ -26,6 +26,16 @@ export default defineConfig({
           });
         },
       },
+      '/user': {
+        target: 'http://localhost:5000',
+        changeOrigin: true,
+        secure: false,
+      },
+      '/me': {
+        target: 'http://localhost:5000',
+        changeOrigin: true,
+        secure: false,
+      },
     }
   }
 })
