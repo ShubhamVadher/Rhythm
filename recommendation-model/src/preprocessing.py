@@ -96,7 +96,8 @@ def build_metadata(df: pd.DataFrame):
     metadata = (
         df["Artist(s)"].apply(lambda x: normalize(x, "artist")) + " " +
         df["Genre"].apply(lambda x: normalize(x, "genre")) + " " +
-        df["Album"].apply(lambda x: normalize(x, "album"))
+        df["Album"].apply(lambda x: normalize(x, "album")) + " " +
+        df['emotion'].apply(lambda x: normalize(x, "emotion"))
     )
     return metadata
 
