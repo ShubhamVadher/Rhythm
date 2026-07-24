@@ -1,27 +1,47 @@
 import React from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
+import './Navbar.css'
 
 export const Navbar = () => {
     const { user, logout } = useAuth()
+    const navigate = useNavigate()
 
     const handleLogin = () => {
-        // Redirects via Vite proxy → server /auth/spotify → Spotify OAuth
         window.location.href = '/auth/spotify'
     }
 
     return (
-        <header style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid #ccc', marginBottom: '20px' }}>
-            <div>
-                <strong>Rhythm App</strong>
+        <header className="navbar-header">
+            <div className="navbar-brand" onClick={() => navigate('/')}>
+                <span className="navbar-logo-symbol">♪</span>
+                <span className="navbar-logo-text">Rhythm</span>
             </div>
-            <nav>
+            <nav className="navbar-nav">
                 {user ? (
-                    <div>
-                        <span>Logged in as: <strong>{user.name}</strong> (ID: {user.account_id}) </span>
-                        <button onClick={logout}>Logout</button>
-                    </div>
+                    <>
+                        <button
+                            id="get-recommendations-btn"
+                            className="navbar-btn-recommend"
+                            onClick={() => navigate('/recommendations')}
+                        >
+                            Get Recommendations
+                        </button>
+                        <span className="navbar-user-info">{user.name}</span>
+                        <button
+                            className="navbar-btn-logout"
+                            onClick={logout}
+                        >
+                            Logout
+                        </button>
+                    </>
                 ) : (
-                    <button onClick={handleLogin}>Connect Spotify</button>
+                    <button
+                        className="navbar-btn-login"
+                        onClick={handleLogin}
+                    >
+                        Connect Spotify
+                    </button>
                 )}
             </nav>
         </header>

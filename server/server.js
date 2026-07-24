@@ -130,7 +130,7 @@ app.post('/auth/spotify/callback', async (req, res) => {
                 account_id: profile.id,
                 refresh_token,
             },
-            { upsert: true, new: true }
+            { upsert: true, returnDocument: 'after' }
         );
     } catch (err) {
         console.error('DB upsert failed:', err);
@@ -184,7 +184,7 @@ app.post('/user/preferences', requireAuth, async (req, res) => {
         const dbUser = await User.findOneAndUpdate(
             { account_id: req.jwtPayload.account_id },
             { fav_artists, fav_genres },
-            { new: true }
+            { returnDocument: 'after' }
         );
         if (!dbUser) return res.status(404).json({ error: 'User not found' });
         return res.json({
@@ -269,6 +269,33 @@ async function safeFetch(url, options = {}) {
     }
 }
 
+// ─── Spotify track search (mirrors enrich_spotify.py's search_track) ────────
+// Given song name + artist name, returns { spotify_track_id, album_image } or nulls.
+async function searchSpotifyTrackId(trackName, artistName, accessToken) {
+    try {
+        const q = artistName
+            ? `track:${trackName} artist:${artistName}`
+            : `track:${trackName}`;
+
+        const { data } = await safeFetch(
+            `https://api.spotify.com/v1/search?q=${encodeURIComponent(q)}&type=track&limit=1`,
+            { headers: { Authorization: `Bearer ${accessToken}` } }
+        );
+
+        const items = data?.tracks?.items;
+        if (!items || items.length === 0) return { spotify_track_id: null, album_image: null };
+
+        const track = items[0];
+        return {
+            spotify_track_id: track.id,
+            album_image: track.album?.images?.[0]?.url || null,
+        };
+    } catch (err) {
+        console.error(`Spotify search failed for "${trackName}":`, err.message);
+        return { spotify_track_id: null, album_image: null };
+    }
+}
+
 // ─── Enrichment helpers ─────────────────────────────────────────────────────
 //
 // Given a Spotify access token, fetch the user's TOP tracks and enrich each one
@@ -316,14 +343,24 @@ async function getTopTracksEnriched(accessToken, timeRange = 'medium_term') {
         };
     }
 
-    // Map Spotify ids -> ReccoBeats ids
-    const idsQuery = spotifyIds.map(id => `ids=${id}`).join('&');
-    const { data: reccoTracksData } = await safeFetch(
-        `https://api.reccobeats.com/v1/track?${idsQuery}`
-    );
+    // Map Spotify ids -> ReccoBeats ids (split into 2 batches of 25 to avoid crashes)
+    const batch1 = spotifyIds.slice(0, 25);
+    const batch2 = spotifyIds.slice(25, 50);
+
+    const fetchReccoBatch = async (ids) => {
+        if (ids.length === 0) return [];
+        const query = ids.map(id => `ids=${id}`).join('&');
+        const { data } = await safeFetch(`https://api.reccobeats.com/v1/track?${query}`);
+        return data?.content || data?.tracks || data || [];
+    };
+
+    const [reccoBatch1, reccoBatch2] = await Promise.all([
+        fetchReccoBatch(batch1),
+        fetchReccoBatch(batch2),
+    ]);
+    const reccoTracks = [...reccoBatch1, ...reccoBatch2];
 
     const reccoIdMap = {};
-    const reccoTracks = reccoTracksData?.content || reccoTracksData?.tracks || reccoTracksData || [];
 
     for (const track of reccoTracks) {
         const spotifyId = track.href?.split('/track/')?.[1];
@@ -604,7 +641,12 @@ app.get('/api/generate-playlist', requireAuth, async (req, res) => {
         const timeRange = req.query.time_range || 'medium_term';
         const userTracks = await getTopTracksEnriched(accessToken, timeRange);
 
+        console.log('[DEBUG] userTracks count:', userTracks.length);
+        console.log('[DEBUG] genres:', genres);
+        console.log('[DEBUG] artists:', artists);
+
         if (!userTracks.length) {
+            console.log('[DEBUG] No tracks found for user, returning 422');
             return res.status(422).json({
                 error: 'Not enough listening data to generate recommendations yet.',
             });
@@ -627,6 +669,7 @@ app.get('/api/generate-playlist', requireAuth, async (req, res) => {
         });
 
         const mlRecommendations = await pythonResponse.json();
+        console.log('[DEBUG] mlRecommendations response:', JSON.stringify(mlRecommendations).substring(0, 500));
 
         // 5) Forward the ML engine's status so the client sees real errors
         //    instead of a blanket 200.
@@ -635,7 +678,24 @@ app.get('/api/generate-playlist', requireAuth, async (req, res) => {
             return res.status(pythonResponse.status).json(mlRecommendations);
         }
 
-        return res.status(200).json(mlRecommendations);
+        // 6) Enrich each recommendation with its Spotify track ID.
+        //    Run all searches in parallel for speed.
+        console.log('Fetching Spotify track IDs for recommendations...');
+        const rawRecs = mlRecommendations.recommendations || [];
+        console.log('[DEBUG] rawRecs count:', rawRecs.length);
+        const enrichedRecs = await Promise.all(
+            rawRecs.map(async (rec) => {
+                const { spotify_track_id, album_image } = await searchSpotifyTrackId(
+                    rec.song,
+                    rec.artist,
+                    accessToken
+                );
+                return { ...rec, spotify_track_id, album_image };
+            })
+        );
+        console.log('[DEBUG] enrichedRecs count:', enrichedRecs.length);
+
+        return res.status(200).json({ ...mlRecommendations, recommendations: enrichedRecs });
 
     } catch (err) {
         console.error('Error generating playlist:', err);
