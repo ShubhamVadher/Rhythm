@@ -11,6 +11,11 @@ export const Navbar = () => {
         window.location.href = '/auth/spotify'
     }
 
+    const handleLogout = async () => {
+        await logout()
+        navigate('/')
+    }
+
     return (
         <header className="navbar-header">
             <div className="navbar-brand" onClick={() => navigate('/')}>
@@ -30,7 +35,7 @@ export const Navbar = () => {
                         <span className="navbar-user-info">{user.name}</span>
                         <button
                             className="navbar-btn-logout"
-                            onClick={logout}
+                            onClick={handleLogout}
                         >
                             Logout
                         </button>

@@ -1,3 +1,4 @@
+import re
 import joblib
 import numpy as np
 import pandas as pd
@@ -72,16 +73,31 @@ def build_text_profile(metadata_df):
 
     return user_text_vector
 
+def song_key(song, artist):
+    # "Another Day In Paradise" / "Another Day in Paradise - 2016 Remaster" / "... (Live)" -> same key
+    song, artist = str(song).lower(), str(artist).lower()
+    version_suffix = r" - [^-]*\b(remaster(ed)?|live|version|edit|mix|mono|stereo|acoustic|demo|single|bonus|explicit)\b.*$"
+    title = re.sub(r"[^\w]", "", re.sub(rf"\(.*?\)|\[.*?\]|{version_suffix}", "", song)) or song
+    main_artist = re.sub(r"[^\w]", "", artist.split(",")[0])
+    return title, main_artist
+
 def diversify(df, indices, scores, max_cnt=3, n=50):
     recs = []
     artists = {}
+    seen_songs = set()
 
     for idx in indices:
         row = df.iloc[idx]
         artist = row["Artist(s)"]
 
-        if artists.get(artist, 0) >= max_cnt:
+        # A missing title would serialize as NaN, which is invalid JSON for the Node server.
+        if pd.isna(row["song"]) or artists.get(artist, 0) >= max_cnt:
             continue
+
+        key = song_key(row["song"], artist)
+        if key in seen_songs:
+            continue
+        seen_songs.add(key)
 
         artists[artist] = artists.get(artist, 0) + 1
 

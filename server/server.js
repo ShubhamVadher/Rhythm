@@ -1,5 +1,8 @@
 require('dotenv').config();
 
+// IPv6 connections to Spotify take ~11s on this network and trip Node's 10s connect timeout.
+require('dns').setDefaultResultOrder('ipv4first');
+
 const express = require('express');
 const mongoose = require('mongoose');
 const crypto = require('crypto');
@@ -73,6 +76,7 @@ app.post('/auth/spotify/callback', async (req, res) => {
 
         const entries = [...pkceStore.entries()].sort((a, b) => b[1].createdAt - a[1].createdAt);
         if (entries.length === 0) {
+            console.warn(`[PKCE] No verifier for state=${state}. Store is empty — server restarted after login began, or this code was already used.`);
             return res.status(400).json({ error: 'PKCE verifier not found. Please restart the login flow.' });
         }
         verifier = entries[0][1].verifier;
@@ -202,7 +206,23 @@ app.post('/user/preferences', requireAuth, async (req, res) => {
     }
 });
 
+// Spotify rotates PKCE refresh tokens on every use, so the new one must be saved and
+// concurrent refreshes for the same user must share one request.
+const accessTokenCache = new Map();
+const pendingRefreshes = new Map();
+
 async function getSpotifyAccessToken(accountId) {
+    const cached = accessTokenCache.get(accountId);
+    if (cached && cached.expiresAt > Date.now()) return cached.token;
+
+    if (!pendingRefreshes.has(accountId)) {
+        pendingRefreshes.set(accountId, refreshSpotifyAccessToken(accountId)
+            .finally(() => pendingRefreshes.delete(accountId)));
+    }
+    return pendingRefreshes.get(accountId);
+}
+
+async function refreshSpotifyAccessToken(accountId) {
     const user = await User.findOne({ account_id: accountId });
     if (!user || !user.refresh_token) return null;
 
@@ -217,9 +237,20 @@ async function getSpotifyAccessToken(accountId) {
     });
 
     const data = await response.json();
-    if (data.error) return null;
+    if (data.error) {
+        console.warn(`[Spotify] Token refresh failed for ${accountId}: ${data.error_description || data.error}`);
+        return null;
+    }
 
-    return data.access_token; // fresh, valid for 1 hour, used immediately and discarded
+    if (data.refresh_token && data.refresh_token !== user.refresh_token) {
+        await User.updateOne({ account_id: accountId }, { refresh_token: data.refresh_token });
+    }
+
+    accessTokenCache.set(accountId, {
+        token: data.access_token,
+        expiresAt: Date.now() + (data.expires_in - 60) * 1000,
+    });
+    return data.access_token;
 }
 
 app.get('/me/top-tracks', requireAuth, async (req, res) => {
@@ -303,6 +334,9 @@ async function searchSpotifyTrackId(trackName, artistName, accessToken) {
 // objects (the same shape the /me/top-tracks-enriched route used to build
 // inline). Both the route below AND the /api/generate-playlist endpoint call
 // this, so the enrichment logic lives in exactly one place.
+// A track's audio features never change; caching them keeps repeat runs under ReccoBeats' rate limit.
+const audioFeaturesCache = new Map();
+
 async function getTopTracksEnriched(accessToken, timeRange = 'medium_term') {
     const { data: topData } = await safeFetch(
         `https://api.spotify.com/v1/me/top/tracks?limit=50&time_range=${timeRange}`,
@@ -351,7 +385,9 @@ async function getTopTracksEnriched(accessToken, timeRange = 'medium_term') {
         if (ids.length === 0) return [];
         const query = ids.map(id => `ids=${id}`).join('&');
         const { data } = await safeFetch(`https://api.reccobeats.com/v1/track?${query}`);
-        return data?.content || data?.tracks || data || [];
+        const list = data?.content || data?.tracks || data;
+        // ReccoBeats rate-limits (429) with an error object; treat that as "no matches".
+        return Array.isArray(list) ? list : [];
     };
 
     const [reccoBatch1, reccoBatch2] = await Promise.all([
@@ -379,9 +415,15 @@ async function getTopTracksEnriched(accessToken, timeRange = 'medium_term') {
         Object.entries(reccoIdMap).map(async ([spotifyId, { reccobeats_id }]) => {
             if (!reccobeats_id) return;
 
-            const { data: features } = await safeFetch(
+            if (audioFeaturesCache.has(reccobeats_id)) {
+                audioFeaturesMap[spotifyId] = audioFeaturesCache.get(reccobeats_id);
+                return;
+            }
+
+            const { status, data: features } = await safeFetch(
                 `https://api.reccobeats.com/v1/track/${reccobeats_id}/audio-features`
             );
+            if (status !== 200) return;
 
             audioFeaturesMap[spotifyId] = {
                 danceability: features.danceability ?? null,
@@ -396,6 +438,7 @@ async function getTopTracksEnriched(accessToken, timeRange = 'medium_term') {
                 valence: features.valence ?? null,
                 tempo: features.tempo ?? null,
             };
+            audioFeaturesCache.set(reccobeats_id, audioFeaturesMap[spotifyId]);
         })
     );
 
@@ -683,7 +726,7 @@ app.get('/api/generate-playlist', requireAuth, async (req, res) => {
         console.log('Fetching Spotify track IDs for recommendations...');
         const rawRecs = mlRecommendations.recommendations || [];
         console.log('[DEBUG] rawRecs count:', rawRecs.length);
-        const enrichedRecs = await Promise.all(
+        const enrichedRecsWithMisses = await Promise.all(
             rawRecs.map(async (rec) => {
                 const { spotify_track_id, album_image } = await searchSpotifyTrackId(
                     rec.song,
@@ -693,13 +736,22 @@ app.get('/api/generate-playlist', requireAuth, async (req, res) => {
                 return { ...rec, spotify_track_id, album_image };
             })
         );
-        console.log('[DEBUG] enrichedRecs count:', enrichedRecs.length);
+
+        // Drop recommendations that couldn't be matched to a real Spotify track.
+        // Different dataset titles can resolve to the same Spotify track; keep the first (highest-ranked).
+        const seenTrackIds = new Set();
+        const enrichedRecs = enrichedRecsWithMisses.filter(rec => {
+            if (!rec.spotify_track_id || seenTrackIds.has(rec.spotify_track_id)) return false;
+            seenTrackIds.add(rec.spotify_track_id);
+            return true;
+        });
+        console.log('[DEBUG] enrichedRecs count:', enrichedRecs.length, `(${enrichedRecsWithMisses.length - enrichedRecs.length} dropped, not found on Spotify)`);
 
         return res.status(200).json({ ...mlRecommendations, recommendations: enrichedRecs });
 
     } catch (err) {
         console.error('Error generating playlist:', err);
-        res.status(500).json({ error: 'Failed to generate recommendations' });
+        res.status(500).json({ error: `Failed to generate recommendations: ${err.message}` });
     }
 });
 

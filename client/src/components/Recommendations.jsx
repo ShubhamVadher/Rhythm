@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import axios from 'axios'
 import { Navbar } from './Navbar.jsx'
@@ -9,8 +9,13 @@ const Recommendations = () => {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const navigate = useNavigate()
+  const fetchStarted = useRef(false)
 
   useEffect(() => {
+    // Each run is a full ML pass; don't let StrictMode trigger it twice.
+    if (fetchStarted.current) return
+    fetchStarted.current = true
+
     const fetchRecommendations = async () => {
       try {
         setLoading(true)

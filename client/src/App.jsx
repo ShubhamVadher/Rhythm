@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { Routes, Route, useNavigate, useSearchParams } from 'react-router-dom'
 import axios from 'axios'
 import { Navbar } from './components/Navbar.jsx'
@@ -115,8 +115,28 @@ const Callback = () => {
   const navigate = useNavigate()
   const [error, setError] = useState(null)
   const code = searchParams.get('code')
+  const state = searchParams.get('state')
+  const exchangeStarted = useRef(false)
 
   useEffect(() => {
+    // Auth codes and PKCE verifiers are single-use; StrictMode would otherwise exchange twice.
+    if (exchangeStarted.current) return
+    exchangeStarted.current = true
+
+    const finishLogin = async () => {
+      sessionStorage.removeItem('pkceRetried')
+      await checkAuth()
+      const meRes = await axios.get('/auth/me')
+      const u = meRes.data?.user
+      const needsOnboarding =
+        !u ||
+        !u.fav_artists ||
+        u.fav_artists.length === 0 ||
+        !u.fav_genres ||
+        u.fav_genres.length === 0
+      navigate(needsOnboarding ? '/onboarding' : '/')
+    }
+
     const exchangeCode = async () => {
       if (!code) {
         setError('No auth code received from Spotify.')
@@ -124,31 +144,38 @@ const Callback = () => {
       }
 
       try {
-        const response = await axios.post('/auth/spotify/callback', { code })
+        const response = await axios.post('/auth/spotify/callback', { code, state })
 
         if (response.data && response.data.success) {
-          await checkAuth()
-          // Check if onboarding is needed
-          const meRes = await axios.get('/auth/me')
-          const u = meRes.data?.user
-          const needsOnboarding =
-            !u ||
-            !u.fav_artists ||
-            u.fav_artists.length === 0 ||
-            !u.fav_genres ||
-            u.fav_genres.length === 0
-          navigate(needsOnboarding ? '/onboarding' : '/')
+          await finishLogin()
         } else {
           setError('Authentication failed.')
         }
       } catch (err) {
         console.error(err)
-        setError(err.response?.data?.error || err.message || 'Error logging in.')
+
+        // The code may already have been spent (page refresh / Back button) — if a session exists, carry on.
+        const alreadyLoggedIn = await axios.get('/auth/me').then(r => !!r.data?.user, () => false)
+        if (alreadyLoggedIn) {
+          await finishLogin()
+          return
+        }
+
+        // Verifier lost (e.g. the server restarted mid-login): restart the flow once automatically.
+        const message = err.response?.data?.error || ''
+        if (message.startsWith('PKCE verifier not found') && !sessionStorage.getItem('pkceRetried')) {
+          sessionStorage.setItem('pkceRetried', '1')
+          window.location.href = '/auth/spotify'
+          return
+        }
+
+        sessionStorage.removeItem('pkceRetried')
+        setError(message || err.message || 'Error logging in.')
       }
     }
 
     exchangeCode()
-  }, [code, checkAuth, navigate])
+  }, [code, state, checkAuth, navigate])
 
   return (
     <div>
